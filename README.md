@@ -1,7 +1,7 @@
 # SDN-Based L4 Firewall
 
 ## 1. Problem Statement
-The objective of this project is to implement an SDN-based firewall solution using Mininet and the Ryu/OS-Ken OpenFlow controller. The firewall must demonstrate controller-switch interaction, flow rule design (match-action), and network behavior observation by explicitly blocking or allowing traffic between specific hosts.
+The objective of this project is to implement an SDN-based firewall solution using Mininet and the OS-Ken OpenFlow controller. The firewall must demonstrate controller-switch interaction, flow rule design (match-action), and network behavior observation by explicitly blocking or allowing traffic between specific hosts.
 
 ## 2. Architecture & Approach
 While standard implementations rely on generic ICMP (`ping`) or default `iperf` traffic to test firewall rules, I developed a custom multi-threaded POSIX socket application in C++ to simulate real-world data exfiltration and test application-specific L4 port blocking.
@@ -17,7 +17,7 @@ This architecture explicitly separates application-layer traffic generation from
 
 ### Prerequisites
 * Mininet Network Emulator
-* Python 3.x with Ryu or OS-Ken framework
+* Python 3.x with OS-Ken framework (`pip install os-ken`)
 * G++ Compiler
 
 ### Execution Instructions
@@ -29,10 +29,10 @@ cd app
 make
 ```
 
-**Step 2: Start the SDN Controller**
+**Step 2: Start the OS-Ken Controller**
 Initialize the firewall logic in a dedicated terminal.
 ```bash
-ryu-manager controller/firewall.py
+osken-manager controller/firewall.py
 ```
 
 **Step 3: Launch Mininet Topology**
