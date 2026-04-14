@@ -1,0 +1,5 @@
+.venv/
+app/server
+app/client
+*.bin
+__pycache__/
