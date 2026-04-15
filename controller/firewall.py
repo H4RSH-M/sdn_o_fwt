@@ -3,7 +3,12 @@ from os_ken.controller import ofp_event
 from os_ken.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from os_ken.controller.handler import set_ev_cls
 from os_ken.ofproto import ofproto_v1_3
-from os_ken.lib.packet import packet, ethernet, ether_types, ipv4, tcp
+from os_ken.lib.packet import packet
+from os_ken.lib.packet import ethernet
+from os_ken.lib.packet import ether_types
+from os_ken.lib.packet import ipv4
+from os_ken.lib.packet import tcp
+from os_ken.lib.packet import icmp
 
 class BroskiFirewall(app_manager.OSKenApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -11,7 +16,7 @@ class BroskiFirewall(app_manager.OSKenApp):
     def __init__(self, *args, **kwargs):
         super(BroskiFirewall, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
-        print("[+] ryu controller initialized broski. firewall is active.")
+        print("[+] OS-Ken Multi-Layer Firewall online broski. Let's catch some strays.")
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -19,7 +24,7 @@ class BroskiFirewall(app_manager.OSKenApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        # table miss flow entry. basically what to do if the switch is clueless
+        # if the dumb switch doesn't know what to do, send it up to the boss
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
@@ -30,6 +35,7 @@ class BroskiFirewall(app_manager.OSKenApp):
         parser = datapath.ofproto_parser
 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        
         if buffer_id:
             mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
                                     priority=priority, match=match,
@@ -50,54 +56,92 @@ class BroskiFirewall(app_manager.OSKenApp):
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
 
-        # ignore ipv6 stuff bruh, we dont need that noise
-        if eth.ethertype == ether_types.ETH_TYPE_IPV6:
+        # ignore the useless background network chatter
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP or eth.ethertype == ether_types.ETH_TYPE_IPV6:
             return
 
-        dst = eth.dst
-        src = eth.src
-        dpid = datapath.id
-
+        dpid = format(datapath.id, "d").zfill(16)
         self.mac_to_port.setdefault(dpid, {})
 
-        # learn the mac address to avoid flooding next time
-        self.mac_to_port[dpid][src] = in_port
+        # LAYER 2: keeping track of where these hosts actually live
+        src_mac = eth.src
+        dst_mac = eth.dst
+        self.mac_to_port[dpid][src_mac] = in_port
 
-        # firewall logic starts here broski
-        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
-        tcp_pkt = pkt.get_protocol(tcp.tcp)
-
-        if ipv4_pkt and tcp_pkt:
-            # check if it's hitting our c++ server port
-            if tcp_pkt.dst_port == 8080:
-
-                # malicious homie h1 (10.0.0.1) trying to send files
-                if ipv4_pkt.src == '10.0.0.1':
-                    print(f"[!] FIREWALL ALERT: blocked tcp traffic from {ipv4_pkt.src} to {ipv4_pkt.dst} on port 8080 broski")
-
-                    # install a hard drop rule in the switch so controller doesn't get spammed
-                    match = parser.OFPMatch(eth_type=0x0800, ip_proto=6,
-                                            ipv4_src=ipv4_pkt.src, ipv4_dst=ipv4_pkt.dst,
-                                            tcp_dst=8080)
-                    actions = []  # empty actions array means DROP the packet damn
-                    self.add_flow(datapath, 100, match, actions)
-                    return  # kill the execution right here
-
-                # trusted homie h3 (10.0.0.3) trying to send files
-                elif ipv4_pkt.src == '10.0.0.3':
-                    print(f"[+] FIREWALL ALLOWED: trusted traffic from {ipv4_pkt.src} to {ipv4_pkt.dst} on port 8080")
-
-        # standard l2 forwarding for everything else (arp, pings, trusted tcp)
-        if dst in self.mac_to_port[dpid]:
-            out_port = self.mac_to_port[dpid][dst]
+        if dst_mac in self.mac_to_port[dpid]:
+            out_port = self.mac_to_port[dpid][dst_mac]
         else:
             out_port = ofproto.OFPP_FLOOD
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # install a flow to avoid packet_in next time
+        # Ensure we only log and inspect actual IPv4 network traffic
+        ip_pkt = pkt.get_protocol(ipv4.ipv4)
+        
+        if ip_pkt:
+            src_ip = ip_pkt.src
+            dst_ip = ip_pkt.dst
+            
+            print("\n" + "="*65)
+            print(f"[*] INCOMING PACKET DETECTED")
+            
+            # --------------------------------------------------------
+            # 1. LAYER 2 CHECK (Hardware/MAC) -> Targets h1
+            # --------------------------------------------------------
+            print(f"  -> [L2 MAC] Src: {src_mac} | Dst: {dst_mac}")
+            
+            if src_mac == '00:00:00:00:00:01': # h1's literal MAC address
+                print(f"[!] BLOCKED AT LAYER 2: h1 MAC address is blacklisted broski.")
+                print("="*65)
+                match = parser.OFPMatch(eth_src=src_mac)
+                self.add_flow(datapath, 100, match, []) # empty actions = drop
+                return
+
+            # --------------------------------------------------------
+            # 2. LAYER 3 CHECK (Network/Ping) -> Targets h2
+            # --------------------------------------------------------
+            print(f"  -> [L3 IP]  Src: {src_ip:<15} | Dst: {dst_ip}")
+            
+            icmp_pkt = pkt.get_protocol(icmp.icmp)
+            if icmp_pkt and src_ip == '10.0.0.2': # h2 trying to ping
+                print(f"[!] BLOCKED AT LAYER 3: h2 ICMP/Ping traffic explicitly denied.")
+                print("="*65)
+                match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=src_ip, ip_proto=1) # protocol 1 is ICMP
+                self.add_flow(datapath, 100, match, [])
+                return
+
+            # --------------------------------------------------------
+            # 3. LAYER 4 CHECK (Transport/Port) -> Targets h3
+            # --------------------------------------------------------
+            tcp_pkt = pkt.get_protocol(tcp.tcp)
+            if tcp_pkt:
+                dst_port = tcp_pkt.dst_port
+                print(f"  -> [L4 TCP] Target Port: {dst_port}")
+                
+                if src_ip == '10.0.0.3': # h3 trying to hit ports
+                    if dst_port == 8080:
+                        print(f"[!] BLOCKED AT LAYER 4: h3 trying to hit the C++ payload on 8080.")
+                        print("="*65)
+                        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=src_ip, ip_proto=6, tcp_dst=dst_port)
+                        self.add_flow(datapath, 100, match, []) # banish to Madhya Pradesh
+                        return
+                        
+                    elif dst_port == 22:
+                        print(f"[!] BLOCKED AT LAYER 4: h3 attempting SSH/netcat on Port 22. Denied.")
+                        print("="*65)
+                        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, ipv4_src=src_ip, ip_proto=6, tcp_dst=22)
+                        self.add_flow(datapath, 100, match, [])
+                        return
+
+            # --------------------------------------------------------
+            # 4. TRUSTED HOST -> Targets h4
+            # --------------------------------------------------------
+            print(f"[+] ALL CHECKS PASSED: Traffic is clean. Let it through.")
+            print("="*65)
+
+        # if we ain't dropping it, tell the switch to remember the route
         if out_port != ofproto.OFPP_FLOOD:
-            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst_mac, eth_src=src_mac)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 1, match, actions, msg.buffer_id)
                 return
