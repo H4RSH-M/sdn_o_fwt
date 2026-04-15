@@ -1,52 +1,58 @@
-# SDN-Based L4 Firewall
+# Multi-Layer SDN Firewall 
 
-## 1. Problem Statement
-The objective of this project is to implement an SDN-based firewall solution using Mininet and the OS-Ken OpenFlow controller. The firewall must demonstrate controller-switch interaction, flow rule design (match-action), and network behavior observation by explicitly blocking or allowing traffic between specific hosts.
+### 1. Problem Statement
+The objective of this project is to implement an advanced, multi-layer SDN-based firewall solution using Mininet and the OS-Ken OpenFlow controller. Moving beyond basic IP blocking, this firewall demonstrates complex controller-switch interaction by executing a cascading inspection gauntlet across the OSI model (Layer 2 MAC, Layer 3 Network, and Layer 4 Transport) before dynamically pushing hard drop rules to the Open vSwitch (OVS) hardware.
 
-## 2. Architecture & Approach
-While standard implementations rely on generic ICMP (`ping`) or default `iperf` traffic to test firewall rules, I developed a custom multi-threaded POSIX socket application in C++ to simulate real-world data exfiltration and test application-specific L4 port blocking.
+### 2. Architecture & Approach
+While standard implementations rely on generic ICMP (ping) traffic to test firewall rules, this architecture separates network-layer security enforcement from application-layer traffic generation. 
 
-* **The Payload Setup:** A C++ TCP server runs on Host 2 (`h2`) listening on `Port 8080`. A C++ client application is used on the other hosts to transmit a payload (`confidential.txt`) across the simulated network.
-* **The Firewall Logic:** The SDN controller operates as a standard L2 learning switch for general traffic, but actively inspects IPv4 and TCP headers for traffic bound to Port 8080.
-  * **Allowed Rule:** Traffic originating from the trusted host `h3` (10.0.0.3) is permitted to complete the TCP handshake and file transfer.
-  * **Blocked Rule:** Traffic originating from the malicious host `h1` (10.0.0.1) is intercepted. The controller drops the packet and immediately pushes a hard OpenFlow drop rule to the virtual switch to prevent CPU exhaustion from subsequent unauthorized packets.
+To prove Layer 4 deep packet inspection, a custom multi-threaded POSIX socket application was developed in C++ to simulate real-world data exfiltration targeting a specific port, alongside standard network diagnostic tools.
 
-This architecture explicitly separates application-layer traffic generation from network-layer security enforcement, proving the controller can perform deep header inspection to protect specific services.
+**The Topology:** A single switch (`s1`) connected to 5 hosts (`h1` through `h5`).
+* **The Target (h5):** Runs the C++ TCP server listening on Port 8080.
+* **The Controller Logic:** Operates as a standard L2 learning switch for general traffic, but actively intercepts and inspects all IPv4 headers against a strict security checklist.
 
-## 3. Setup and Execution Steps
+**The Inspection Gauntlet:**
+* **Layer 2 Hardware Block (h1):** Traffic originating from MAC address `00:00:00:00:00:01` is blacklisted. Packets are dropped before IP inspection occurs.
+* **Layer 3 Network Block (h2):** Passes the MAC check, but explicitly denies ICMP protocol traffic from `10.0.0.2`. Pings are dropped, but TCP could theoretically pass.
+* **Layer 4 Application Block (h3):** Passes L2 and L3. The controller parses the TCP header. Attempts from `10.0.0.3` to access Port `22` (SSH) or Port `8080` (the custom C++ payload) are explicitly blocked.
+* **Default Allow / Trusted (h4):** Traffic from `10.0.0.4` survives all checks. The controller permits the TCP handshake and file transfer, pushing a standard forwarding rule to the switch.
 
-### Prerequisites
+When a violation occurs, the OS-Ken controller immediately pushes a priority-100 hard OpenFlow drop rule to the virtual switch to prevent CPU exhaustion from subsequent unauthorized packets.
+
+### 3. Setup and Execution Steps
+
+**Prerequisites**
 * Mininet Network Emulator
-* Python 3.x with OS-Ken framework (`pip install os-ken`)
+* Python 3.12+ with OS-Ken framework (`pip install os-ken`)
 * G++ Compiler
 
-### Execution Instructions
+**Execution Instructions**
 
-**Step 1: Compile the C++ Payload Application**
-Navigate to the `app` directory and compile the server and client binaries.
+**Step 1: Compile the C++ Payload Application** Navigate to the `app` directory and compile the server and client binaries.
 ```bash
 cd app
 make
 ```
 
-**Step 2: Start the OS-Ken Controller**
-Initialize the firewall logic in a dedicated terminal.
+**Step 2: Start the OS-Ken Controller** Initialize the multi-layer firewall logic in a dedicated terminal.
 ```bash
 osken-manager controller/firewall.py
 ```
 
-**Step 3: Launch Mininet Topology**
-Start the virtual network with a single switch, 3 hosts, and a remote controller.
+**Step 3: Launch Mininet Topology** Start the virtual network with a single switch, 5 hosts, and a remote controller. Ensure previous caches are cleared.
 ```bash
-sudo mn --topo single,3 --mac --controller=remote
+sudo mn -c
+sudo mn --topo single,5 --mac --controller=remote
 ```
 
-**Step 4: Execute the Tests**
-Open the host terminals (`mininet> xterm h1 h2 h3`) or run directly from the Mininet CLI:
+**Step 4: Execute the Multi-Layer Tests** Open the host terminals (`mininet> xterm h1 h2 h3 h4 h5`) and run the sequence to trigger the cascading blocks:
 
-1. Start the server on h2:
-   `mininet> h2 ./app/server &`
-2. Test Trusted Host (h3) - *Expected to Succeed*:
-   `mininet> h3 ./app/client 10.0.0.2 ../payload/confidential.txt`
-3. Test Blocked Host (h1) - *Expected to Hang/Fail & Trigger Firewall Alert*:
-   `mininet> h1 ./app/client 10.0.0.2 ../payload/confidential.txt`
+1.  **Initialize Target:** Start the server on h5.
+    * `h5` terminal: `./app/server`
+2.  **Test L2 MAC Block:** * `h1` terminal: `ping -c 3 10.0.0.5` *(Fails immediately)*
+3.  **Test L3 ICMP Block:** * `h2` terminal: `ping -c 3 10.0.0.5` *(Fails immediately)*
+4.  **Test L4 Port Blocks:** * `h3` terminal: `ping -c 3 10.0.0.5` *(Succeeds - ICMP allowed)*
+    * `h3` terminal: `nc -vz 10.0.0.5 22` *(Fails - SSH blocked)*
+    * `h3` terminal: `./app/client 10.0.0.5 ../payload/confidential.txt` *(Fails - Port 8080 blocked)*
+5.  **Test Trusted Host:** * `h4` terminal: `./app/client 10.0.0.5 ../payload/confidential.txt` *(Succeeds - File transferred)*
