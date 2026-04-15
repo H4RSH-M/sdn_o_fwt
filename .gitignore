@@ -3,3 +3,5 @@ app/server
 app/client
 *.bin
 __pycache__/
+*.pdf
+*.odt
